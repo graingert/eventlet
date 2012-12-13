@@ -102,8 +102,8 @@ class BaseHub(object):
             signal.signal(signal.SIGALRM, self._old_signal_handler)
         signal.alarm(0)
 
-    def add(self, evtype, fileno, cb):
-        """ Signals an intent to or write a particular file descriptor.
+    def add(self, evtype, fileno, cb, _allow_multiple_readers=False):
+        """ Signals an intent to read or write a particular file descriptor.
 
         The *evtype* argument is either the constant READ or WRITE.
 
@@ -115,7 +115,7 @@ class BaseHub(object):
         listener = self.lclass(evtype, fileno, cb)
         bucket = self.listeners[evtype]
         if fileno in bucket:
-            if g_prevent_multiple_readers:
+            if g_prevent_multiple_readers and not _allow_multiple_readers:
                 raise RuntimeError("Second simultaneous %s on fileno %s "\
                      "detected.  Unless you really know what you're doing, "\
                      "make sure that only one greenthread can %s any "\

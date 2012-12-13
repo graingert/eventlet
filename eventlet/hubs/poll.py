@@ -23,11 +23,11 @@ class Hub(BaseHub):
         except AttributeError:
             self.modify = self.poll.register
 
-    def add(self, evtype, fileno, cb):
-        listener = super(Hub, self).add(evtype, fileno, cb)
+    def add(self, evtype, fileno, cb, _allow_multiple_readers=False):
+        listener = super(Hub, self).add(evtype, fileno, cb, _allow_multiple_readers=_allow_multiple_readers)
         self.register(fileno, new=True)
         return listener
-    
+
     def remove(self, listener):
         super(Hub, self).remove(listener)
         self.register(listener.fileno)
@@ -47,7 +47,7 @@ class Hub(BaseHub):
                         self.modify(fileno, mask)
                     except (IOError, OSError):
                         self.poll.register(fileno, mask)
-            else: 
+            else:
                 try:
                     self.poll.unregister(fileno)
                 except (KeyError, IOError, OSError):
@@ -108,7 +108,7 @@ class Hub(BaseHub):
             except:
                 self.squelch_exception(fileno, sys.exc_info())
                 clear_sys_exc_info()
-        
+
         if self.debug_blocking:
             self.block_detect_post()
 
