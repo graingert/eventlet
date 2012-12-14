@@ -4,7 +4,7 @@
 from __future__ import with_statement
 
 __zmq__ = __import__('zmq')
-from eventlet import hubs
+from eventlet import hubs, sleep
 from eventlet.patcher import slurp_properties
 from eventlet.support import greenlets as greenlet
 
@@ -200,6 +200,11 @@ class Socket(_Socket):
         self._eventlet_recv_event = _BlockedThread()
         self._eventlet_send_lock = _QueueLock()
         self._eventlet_recv_lock = _QueueLock()
+        self._eventlet_listener = None
+
+    def _add_hub_listener(self):
+        if self._eventlet_listener is not None:
+            return
 
         def event(fd):
             # Some events arrived at the zmq socket. This may mean
@@ -211,15 +216,23 @@ class Socket(_Socket):
         hub = hubs.get_hub()
         self._eventlet_listener = hub.add(hub.READ, self.getsockopt(FD), event)
 
+    def _remove_hub_listener(self, wake_recv=False, wake_send=False):
+        if self._eventlet_listener is None:
+            return
+
+        hub = hubs.get_hub()
+        hub.remove(self._eventlet_listener)
+        self._eventlet_listener = None
+
+        if wake_recv:
+            self._eventlet_recv_event.wake()
+        if wake_send:
+            self._eventlet_send_event.wake()
+
     @_wraps(_Socket.close)
     def close(self):
         _Socket.close(self)
-        if self._eventlet_listener is not None:
-            hubs.get_hub().remove(self._eventlet_listener)
-            self._eventlet_listener = None
-            # wake any blocked threads
-            self._eventlet_send_event.wake()
-            self._eventlet_recv_event.wake()
+        self._remove_hub_listener(wake_recv=True, wake_send=True)
 
     @_wraps(_Socket.getsockopt)
     def getsockopt(self, option):
@@ -244,12 +257,11 @@ class Socket(_Socket):
         """
         if flags & NOBLOCK:
             result = _Socket_send(self, msg, flags, copy, track)
-            # Instead of calling both wake methods, could call
-            # self.getsockopt(EVENTS) which would trigger wakeups if
-            # needed.
-            self._eventlet_send_event.wake()
-            self._eventlet_recv_event.wake()
+            # self.getsockopt(EVENTS) will trigger proper wakeups
+            self.getsockopt(EVENTS)
             return result
+
+        self._add_hub_listener()
 
         # TODO: pyzmq will copy the message buffer and create Message
         # objects under some circumstances. We could do that work here
@@ -258,7 +270,9 @@ class Socket(_Socket):
         with self._eventlet_send_lock:
             while True:
                 try:
-                    return _Socket_send(self, msg, flags, copy, track)
+                    result = _Socket_send(self, msg, flags, copy, track)
+                    self._remove_hub_listener(wake_send=True)
+                    return result
                 except ZMQError, e:
                     if e.errno == EAGAIN:
                         self._eventlet_send_event.block()
@@ -269,7 +283,6 @@ class Socket(_Socket):
                     # make the socket ready to recv. Wake the next
                     # receiver. (Could check EVENTS for POLLIN here)
                     self._eventlet_recv_event.wake()
-
 
     @_wraps(_Socket.send_multipart)
     def send_multipart(self, msg_parts, flags=0, copy=True, track=False):
@@ -293,18 +306,19 @@ class Socket(_Socket):
         """
         if flags & NOBLOCK:
             msg = _Socket_recv(self, flags, copy, track)
-            # Instead of calling both wake methods, could call
-            # self.getsockopt(EVENTS) which would trigger wakeups if
-            # needed.
-            self._eventlet_send_event.wake()
-            self._eventlet_recv_event.wake()
+            # self.getsockopt(EVENTS) will trigger proper wakeups
+            self.getsockopt(EVENTS)
             return msg
+
+        self._add_hub_listener()
 
         flags |= NOBLOCK
         with self._eventlet_recv_lock:
             while True:
                 try:
-                    return _Socket_recv(self, flags, copy, track)
+                    result = _Socket_recv(self, flags, copy, track)
+                    self._remove_hub_listener(wake_recv=True)
+                    return result
                 except ZMQError, e:
                     if e.errno == EAGAIN:
                         self._eventlet_recv_event.block()
